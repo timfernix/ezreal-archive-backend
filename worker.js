@@ -14,19 +14,33 @@ export default {
             try {
                 const { results } = await env.DB.prepare(`
                     SELECT 
-                        s.id, s.codename, s.name, s.description, s.release_year,
-                        (SELECT json_group_array(json_object('type', type, 'r2_key', r2_key)) FROM assets WHERE skin_id = s.id) as media,
-                        (SELECT json_group_array(t.name) FROM tags t JOIN skin_tags st ON t.id = st.tag_id WHERE st.skin_id = s.id) as tags,
-                        (SELECT json_group_array(json_object('platform', platform, 'url', url)) FROM external_links WHERE skin_id = s.id) as externalLinks
+                        s.codename, s.name,
+                        (
+                            SELECT json_group_array(json_object(
+                                'type', a.type, 
+                                'url', a.r2_key, 
+                                'category', a.category, 
+                                'game', a.game,
+                                'tags', (
+                                    SELECT json_group_array(t.name) 
+                                    FROM tags t 
+                                    JOIN asset_tags at ON t.id = at.tag_id 
+                                    WHERE at.asset_id = a.id
+                                )
+                            )) 
+                            FROM assets a WHERE a.skin_id = s.id
+                        ) as media
                     FROM skins s
                 `).all();
 
                 const formatted = results.map(row => ({
-                    ...row,
-                    media: JSON.parse(row.media || '[]'),
-                    tags: JSON.parse(row.tags || '[]'),
-                    externalLinks: JSON.parse(row.externalLinks || '[]')
-                }));
+                    skinName: row.name,
+                    skinCodename: row.codename,
+                    media: JSON.parse(row.media || '[]').map(m => ({
+                        ...m,
+                        tags: JSON.parse(m.tags || '[]')
+                    }))
+                })).filter(skin => skin.media.length > 0);
 
                 return new Response(JSON.stringify(formatted), { headers: corsHeaders });
             } catch (err) {
@@ -36,4 +50,4 @@ export default {
 
         return new Response("Not found", { status: 404 });
     }
-}; 
+};

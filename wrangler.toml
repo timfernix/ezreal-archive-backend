@@ -1,3 +1,8 @@
 name = "ezreal-api"
 main = "worker.js"
 compatibility_date = "2026-06-18"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "ezreal"
+database_id = "a065fd24-4618-4f26-95ec-267c50d454b6"

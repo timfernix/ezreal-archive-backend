@@ -1,7 +1,7 @@
 export default {
     async fetch(request, env, ctx) {
         const corsHeaders = {
-            "Access-Control-Allow-Origin": "https://timfernix.dev",
+            "Access-Control-Allow-Origin": "https://timfernix.dev/",
             "Access-Control-Allow-Methods": "GET, OPTIONS",
             "Content-Type": "application/json"
         };

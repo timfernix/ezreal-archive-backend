@@ -1,7 +1,7 @@
 export default {
     async fetch(request, env, ctx) {
         const corsHeaders = {
-            "Access-Control-Allow-Origin": "https://timfernix.dev/",
+            "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, OPTIONS",
             "Content-Type": "application/json"
         };
@@ -9,6 +9,18 @@ export default {
         if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
         const url = new URL(request.url);
+
+        const safeParseJSON = (str) => {
+            if (!str || str === "null" || str.trim() === "") {
+                return [];
+            }
+            try {
+                return JSON.parse(str);
+            } catch (e) {
+                console.error("Konnte folgenden DB-String nicht parsen:", str);
+                return [];
+            }
+        };
 
         if (url.pathname === "/api/skins") {
             try {
@@ -36,9 +48,9 @@ export default {
                 const formatted = results.map(row => ({
                     skinName: row.name,
                     skinCodename: row.codename,
-                    media: JSON.parse(row.media || '[]').map(m => ({
+                    media: safeParseJSON(row.media).map(m => ({
                         ...m,
-                        tags: JSON.parse(m.tags || '[]')
+                        tags: safeParseJSON(m.tags)
                     }))
                 })).filter(skin => skin.media.length > 0);
 

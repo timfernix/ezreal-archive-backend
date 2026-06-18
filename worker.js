@@ -10,15 +10,22 @@ export default {
 
         const url = new URL(request.url);
 
-        const safeParseJSON = (str) => {
-            if (!str || str === "null" || str.trim() === "") {
-                return [];
+        const safeParseJSON = (data) => {
+            if (!data) return [];
+            
+            if (typeof data === 'object') {
+                return Array.isArray(data) ? data : [data];
             }
+            
+            if (typeof data !== 'string') return [];
+            
+            if (data === "null" || data.trim() === "") return [];
+            
             try {
-                return JSON.parse(str);
+                return JSON.parse(data);
             } catch (e) {
-                console.error("Konnte folgenden DB-String nicht parsen:", str);
-                return [];
+                console.error("Konnte Datenbank-Eintrag nicht parsen:", data);
+                return []; 
             }
         };
 
@@ -50,9 +57,9 @@ export default {
                     skinCodename: row.codename,
                     media: safeParseJSON(row.media).map(m => ({
                         ...m,
-                        tags: safeParseJSON(m.tags)
+                        tags: safeParseJSON(m.tags).filter(Boolean) 
                     }))
-                })).filter(skin => skin.media.length > 0);
+                })).filter(skin => skin.media && skin.media.length > 0);
 
                 return new Response(JSON.stringify(formatted), { headers: corsHeaders });
             } catch (err) {

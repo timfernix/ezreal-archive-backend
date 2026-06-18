@@ -41,6 +41,7 @@ export default {
                             SELECT json_group_array(json_object(
                                 'type', a.type, 
                                 'url', a.r2_key, 
+                                'title', COALESCE(a.title, a.r2_key),
                                 'category', a.category, 
                                 'game', a.game,
                                 'assetReleaseYear', a.asset_release_year,

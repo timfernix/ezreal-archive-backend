@@ -33,13 +33,17 @@ export default {
             try {
                 const { results } = await env.DB.prepare(`
                     SELECT 
-                        s.codename, s.name,
+                        s.codename,
+                        s.name,
+                        s.description,
+                        s.release_year,
                         (
                             SELECT json_group_array(json_object(
                                 'type', a.type, 
                                 'url', a.r2_key, 
                                 'category', a.category, 
                                 'game', a.game,
+                                'assetReleaseYear', a.asset_release_year,
                                 'tags', (
                                     SELECT json_group_array(t.name) 
                                     FROM tags t 
@@ -55,6 +59,8 @@ export default {
                 const formatted = results.map(row => ({
                     skinName: row.name,
                     skinCodename: row.codename,
+                    description: row.description,
+                    releaseYear: row.release_year,
                     media: safeParseJSON(row.media).map(m => ({
                         ...m,
                         tags: safeParseJSON(m.tags).filter(Boolean) 

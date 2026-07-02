@@ -293,15 +293,27 @@ export default {
     
         if (url.pathname === "/api/filters") {
             try {
-                const skinlinesResult = await env.DB.prepare(`
-                    SELECT DISTINCT
-                        SUBSTRING(s.name, 1, LENGTH(s.name) - INSTR(REVERSE(s.name), ' ')) AS skinline
+                // Fetch all distinct skin names and extract skinlines
+                const skinsData = await env.DB.prepare(`
+                    SELECT DISTINCT s.name
                     FROM skins s
                     WHERE s.name IS NOT NULL AND TRIM(s.name) != ''
-                    ORDER BY skinline ASC
+                    ORDER BY s.name ASC
                 `).all();
 
-                const categoriesResult = await env.DB.prepare(`
+                // Extract skinlines by removing " Ezreal" from the end (case-insensitive)
+                const skinlines = (skinsData.results || [])
+                    .map(row => {
+                        if (!row || !row.name) return null;
+                        // Remove " Ezreal" suffix (case-insensitive)
+                        const name = row.name.trim();
+                        const skinline = name.replace(/\s+ezreal\s*$/i, '').trim();
+                        return skinline || name;
+                    })
+                    .filter((value, index, self) => value && self.indexOf(value) === index)
+                    .sort();
+
+                const categoriesData = await env.DB.prepare(`
                     SELECT DISTINCT a.category
                     FROM assets a
                     WHERE a.category IS NOT NULL AND TRIM(a.category) != ''
@@ -315,7 +327,7 @@ export default {
                     ORDER BY category ASC
                 `).all();
 
-                const gamesResult = await env.DB.prepare(`
+                const gamesData = await env.DB.prepare(`
                     SELECT DISTINCT a.game
                     FROM assets a
                     WHERE a.game IS NOT NULL AND TRIM(a.game) != '' AND a.game != 'Generic'
@@ -329,21 +341,21 @@ export default {
                     ORDER BY game ASC
                 `).all();
 
-                const skinlines = skinlinesResult.results
-                    .map(row => row.skinline)
-                    .filter(Boolean);
-
-                const categories = categoriesResult.results
+                const categories = (categoriesData.results || [])
                     .map(row => row.category || 'Uncategorized')
-                    .filter(Boolean);
+                    .filter((value, index, self) => value && self.indexOf(value) === index)
+                    .sort();
 
-                const games = gamesResult.results
+                const games = (gamesData.results || [])
                     .map(row => row.game || 'Generic')
-                    .filter(Boolean);
+                    .filter((value, index, self) => value && self.indexOf(value) === index)
+                    .sort();
 
+                console.log('Filter options:', { skinlines: skinlines.length, categories: categories.length, games: games.length });
                 return new Response(JSON.stringify({ skinlines, categories, games }), { headers: corsHeaders });
             } catch (err) {
-                return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+                console.error('Filter endpoint error:', err);
+                return new Response(JSON.stringify({ error: err.message, skinlines: [], categories: [], games: [] }), { status: 500, headers: corsHeaders });
             }
         }
 

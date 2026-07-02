@@ -26,7 +26,7 @@ export default {
             }
         };
 
-        // ── /api/skins ──────────────────────────────────────────────────────
+        // ── /api/skins 
         if (url.pathname === "/api/skins") {
             const limitParam = url.searchParams.get('limit');
             const offsetParam = url.searchParams.get('offset');
@@ -116,7 +116,7 @@ export default {
                 }
             }
 
-            // Legacy (no pagination params): return skin-grouped array as before
+            // Legacy (no pagination params)
             try {
                 const { results } = await env.DB.prepare(`
                     SELECT
@@ -284,6 +284,64 @@ export default {
                 };
 
                 return new Response(JSON.stringify(item), { headers: corsHeaders });
+            } catch (err) {
+                return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+            }
+        }
+
+        // ── /api/filters
+    
+        if (url.pathname === "/api/filters") {
+            try {
+                const skinlinesResult = await env.DB.prepare(`
+                    SELECT DISTINCT
+                        SUBSTRING(s.name, 1, LENGTH(s.name) - INSTR(REVERSE(s.name), ' ')) AS skinline
+                    FROM skins s
+                    WHERE s.name IS NOT NULL AND TRIM(s.name) != ''
+                    ORDER BY skinline ASC
+                `).all();
+
+                const categoriesResult = await env.DB.prepare(`
+                    SELECT DISTINCT a.category
+                    FROM assets a
+                    WHERE a.category IS NOT NULL AND TRIM(a.category) != ''
+                    
+                    UNION
+                    
+                    SELECT DISTINCT el.category
+                    FROM external_links el
+                    WHERE el.category IS NOT NULL AND TRIM(el.category) != ''
+                    
+                    ORDER BY category ASC
+                `).all();
+
+                const gamesResult = await env.DB.prepare(`
+                    SELECT DISTINCT a.game
+                    FROM assets a
+                    WHERE a.game IS NOT NULL AND TRIM(a.game) != '' AND a.game != 'Generic'
+                    
+                    UNION
+                    
+                    SELECT DISTINCT el.game
+                    FROM external_links el
+                    WHERE el.game IS NOT NULL AND TRIM(el.game) != '' AND el.game != 'Generic'
+                    
+                    ORDER BY game ASC
+                `).all();
+
+                const skinlines = skinlinesResult.results
+                    .map(row => row.skinline)
+                    .filter(Boolean);
+
+                const categories = categoriesResult.results
+                    .map(row => row.category || 'Uncategorized')
+                    .filter(Boolean);
+
+                const games = gamesResult.results
+                    .map(row => row.game || 'Generic')
+                    .filter(Boolean);
+
+                return new Response(JSON.stringify({ skinlines, categories, games }), { headers: corsHeaders });
             } catch (err) {
                 return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
             }

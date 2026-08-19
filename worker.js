@@ -176,18 +176,21 @@ export default {
 
                 const { results } = await env.DB.prepare(pageQuery).bind(...whereParams, limit, offset).all();
 
-                // Unfiltered requests can use a cheap base-table count; filtered ones must count matching rows only.
-                let total;
-                if (whereClauses.length === 0) {
-                    const countRow = await env.DB.prepare(`
-                        SELECT
-                            (SELECT COUNT(*) FROM assets) + (SELECT COUNT(*) FROM external_links) AS total
-                    `).first();
-                    total = countRow?.total ?? 0;
-                } else {
-                    const countQuery = `${flatCte} SELECT COUNT(*) AS total FROM flat ${whereSql}`;
-                    const countRow = await env.DB.prepare(countQuery).bind(...whereParams).first();
-                    total = countRow?.total ?? 0;
+                // Total only needs to be known once — recomputing it on every subsequent page would
+                // re-scan the whole (filtered) table again for no benefit, since the client caches it.
+                let total = null;
+                if (offset === 0) {
+                    if (whereClauses.length === 0) {
+                        const countRow = await env.DB.prepare(`
+                            SELECT
+                                (SELECT COUNT(*) FROM assets) + (SELECT COUNT(*) FROM external_links) AS total
+                        `).first();
+                        total = countRow?.total ?? 0;
+                    } else {
+                        const countQuery = `${flatCte} SELECT COUNT(*) AS total FROM flat ${whereSql}`;
+                        const countRow = await env.DB.prepare(countQuery).bind(...whereParams).first();
+                        total = countRow?.total ?? 0;
+                    }
                 }
 
                 // Only look up tags for the assets that ended up on this page, not the whole table.
@@ -226,7 +229,9 @@ export default {
                 }));
 
                 const nextOffset = offset + items.length;
-                const hasMore = nextOffset < total;
+                // Without a fresh total (pages after the first) fall back to the standard
+                // "got a full page, so there's probably more" heuristic; the next request self-corrects.
+                const hasMore = total !== null ? nextOffset < total : items.length >= limit;
 
                 return respondCached({ items, hasMore, nextOffset, total });
             } catch (err) {

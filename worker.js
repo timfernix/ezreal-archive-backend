@@ -1,5 +1,6 @@
 const MAX_LIMIT = 200;
 const DEFAULT_LIMIT = 50;
+const CACHE_TTL_SECONDS = 120; // reuse identical GET responses to avoid re-scanning D1
 
 export default {
     async fetch(request, env, ctx) {
@@ -12,6 +13,24 @@ export default {
         if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
         const url = new URL(request.url);
+        const cache = caches.default;
+
+        // Cache-Control does not apply on cache miss, so read/write the edge cache explicitly.
+        const cachedResponse = request.method === "GET" ? await cache.match(request) : null;
+        if (cachedResponse) {
+            return cachedResponse;
+        }
+
+        const respondCached = (body, status = 200) => {
+            const response = new Response(JSON.stringify(body), {
+                status,
+                headers: { ...corsHeaders, "Cache-Control": `public, max-age=${CACHE_TTL_SECONDS}` }
+            });
+            if (status === 200 && request.method === "GET") {
+                ctx.waitUntil(cache.put(request, response.clone()));
+            }
+            return response;
+        };
 
         const safeParseJSON = (data) => {
             if (!data) return [];
@@ -50,12 +69,7 @@ export default {
                                 a.category    AS category,
                                 a.game        AS game,
                                 a.asset_release_year AS releaseYear,
-                                (
-                                    SELECT json_group_array(t.name)
-                                    FROM tags t
-                                    JOIN asset_tags at2 ON t.id = at2.tag_id
-                                    WHERE at2.asset_id = a.id
-                                ) AS tags,
+                                a.id           AS assetId,
                                 NULL           AS platform,
                                 'asset'        AS source
                             FROM assets a
@@ -73,15 +87,13 @@ export default {
                                 el.category   AS category,
                                 el.game       AS game,
                                 el.asset_release_year AS releaseYear,
-                                '[]'          AS tags,
+                                NULL          AS assetId,
                                 el.platform   AS platform,
                                 'external_link' AS source
                             FROM external_links el
                             JOIN skins s ON s.id = el.skin_id
                         )
-                        SELECT
-                            *,
-                            (SELECT COUNT(*) FROM flat) AS total
+                        SELECT *
                         FROM flat
                         ORDER BY
                             CAST(releaseYear AS INTEGER) DESC,
@@ -90,7 +102,31 @@ export default {
                         LIMIT ? OFFSET ?
                     `).bind(limit, offset).all();
 
-                    const total = results.length > 0 ? results[0].total : 0;
+                    // Cheap row count on the base tables instead of re-scanning the joined/tagged CTE.
+                    const countRow = await env.DB.prepare(`
+                        SELECT
+                            (SELECT COUNT(*) FROM assets) + (SELECT COUNT(*) FROM external_links) AS total
+                    `).first();
+                    const total = countRow?.total ?? 0;
+
+                    // Only look up tags for the assets that ended up on this page, not the whole table.
+                    const pageAssetIds = [...new Set(results.map(row => row.assetId).filter(id => id !== null && id !== undefined))];
+                    const tagsByAssetId = {};
+
+                    if (pageAssetIds.length > 0) {
+                        const placeholders = pageAssetIds.map(() => '?').join(',');
+                        const { results: tagRows } = await env.DB.prepare(`
+                            SELECT at2.asset_id AS assetId, json_group_array(t.name) AS tags
+                            FROM asset_tags at2
+                            JOIN tags t ON t.id = at2.tag_id
+                            WHERE at2.asset_id IN (${placeholders})
+                            GROUP BY at2.asset_id
+                        `).bind(...pageAssetIds).all();
+
+                        tagRows.forEach(row => {
+                            tagsByAssetId[row.assetId] = row.tags;
+                        });
+                    }
 
                     const items = results.map(row => ({
                         skinName:       row.skinName,
@@ -102,7 +138,7 @@ export default {
                         category:       row.category    || 'Uncategorized',
                         game:           row.game        || 'Generic',
                         releaseYear:    String(row.releaseYear ?? 'Unknown'),
-                        tags:           safeParseJSON(row.tags).filter(Boolean),
+                        tags:           safeParseJSON(tagsByAssetId[row.assetId] || '[]').filter(Boolean),
                         platform:       row.platform    || '',
                         source:         row.source      || 'asset'
                     }));
@@ -110,7 +146,7 @@ export default {
                     const nextOffset = offset + items.length;
                     const hasMore = nextOffset < total;
 
-                    return new Response(JSON.stringify({ items, hasMore, nextOffset, total }), { headers: corsHeaders });
+                    return respondCached({ items, hasMore, nextOffset, total });
                 } catch (err) {
                     return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
                 }
@@ -185,7 +221,7 @@ export default {
                     }))
                 })).filter(skin => skin.media && skin.media.length > 0);
 
-                return new Response(JSON.stringify(formatted), { headers: corsHeaders });
+                return respondCached(formatted);
             } catch (err) {
                 return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
             }
@@ -283,7 +319,7 @@ export default {
                     source:          row.source      || 'asset'
                 };
 
-                return new Response(JSON.stringify(item), { headers: corsHeaders });
+                return respondCached(item);
             } catch (err) {
                 return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
             }
@@ -352,7 +388,7 @@ export default {
                     .sort();
 
                 console.log('Filter options:', { skinlines: skinlines.length, categories: categories.length, games: games.length });
-                return new Response(JSON.stringify({ skinlines, categories, games }), { headers: corsHeaders });
+                return respondCached({ skinlines, categories, games });
             } catch (err) {
                 console.error('Filter endpoint error:', err);
                 return new Response(JSON.stringify({ error: err.message, skinlines: [], categories: [], games: [] }), { status: 500, headers: corsHeaders });

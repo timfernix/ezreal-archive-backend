@@ -45,183 +45,190 @@ export default {
             }
         };
 
-        // ── /api/skins 
+        // Whitelisted ORDER BY clauses only — never build ORDER BY from raw user input.
+        const buildOrderByClause = (sort) => {
+            switch (sort) {
+                case 'oldest':
+                    return 'ORDER BY CAST(releaseYear AS INTEGER) ASC, skinName ASC, title ASC';
+                case 'name-asc':
+                    return 'ORDER BY title ASC';
+                case 'skinline-asc':
+                    return 'ORDER BY skinline ASC, title ASC';
+                case 'none':
+                    return '';
+                case 'newest':
+                default:
+                    return 'ORDER BY CAST(releaseYear AS INTEGER) DESC, skinName ASC, title ASC';
+            }
+        };
+
+        // ── /api/skins
+        // Always paginated: server-side filtering keeps row reads bounded regardless of archive size.
         if (url.pathname === "/api/skins") {
             const limitParam = url.searchParams.get('limit');
             const offsetParam = url.searchParams.get('offset');
-            const usePagination = limitParam !== null;
+            const limit = Math.min(Math.max(parseInt(limitParam, 10) || DEFAULT_LIMIT, 1), MAX_LIMIT);
+            const offset = Math.max(parseInt(offsetParam, 10) || 0, 0);
 
-            if (usePagination) {
-                // Flat paginated response: { items, hasMore, nextOffset, total }
-                const limit = Math.min(Math.max(parseInt(limitParam, 10) || DEFAULT_LIMIT, 1), MAX_LIMIT);
-                const offset = Math.max(parseInt(offsetParam, 10) || 0, 0);
+            const searchTerm = (url.searchParams.get('q') || '').trim();
+            const skinlineFilters = url.searchParams.getAll('skinline').map(v => v.trim()).filter(Boolean);
+            const categoryFilters = url.searchParams.getAll('category').map(v => v.trim()).filter(Boolean);
+            const gameFilters = url.searchParams.getAll('game').map(v => v.trim()).filter(Boolean);
+            const sort = url.searchParams.get('sort') || 'newest';
 
-                try {
-                    const { results } = await env.DB.prepare(`
-                        WITH flat AS (
-                            SELECT
-                                s.name        AS skinName,
-                                s.description AS description,
-                                s.release_year AS skinReleaseYear,
-                                a.type        AS type,
-                                a.r2_key      AS url,
-                                COALESCE(a.title, a.r2_key) AS title,
-                                a.category    AS category,
-                                a.game        AS game,
-                                a.asset_release_year AS releaseYear,
-                                a.id           AS assetId,
-                                NULL           AS platform,
-                                'asset'        AS source
-                            FROM assets a
-                            JOIN skins s ON s.id = a.skin_id
+            const orderByClause = buildOrderByClause(sort);
 
-                            UNION ALL
+            // Skinline = skin name with a trailing " Ezreal" stripped (mirrors the frontend's deriveSkinlineFromName).
+            const skinlineExpr = `
+                CASE
+                    WHEN LOWER(TRIM(s.name)) LIKE '% ezreal' THEN TRIM(SUBSTR(TRIM(s.name), 1, LENGTH(TRIM(s.name)) - 7))
+                    ELSE TRIM(s.name)
+                END
+            `;
 
-                            SELECT
-                                s.name        AS skinName,
-                                s.description AS description,
-                                s.release_year AS skinReleaseYear,
-                                'external'    AS type,
-                                el.url        AS url,
-                                COALESCE(el.title, el.url) AS title,
-                                el.category   AS category,
-                                el.game       AS game,
-                                el.asset_release_year AS releaseYear,
-                                NULL          AS assetId,
-                                el.platform   AS platform,
-                                'external_link' AS source
-                            FROM external_links el
-                            JOIN skins s ON s.id = el.skin_id
-                        )
-                        SELECT *
-                        FROM flat
-                        ORDER BY
-                            CAST(releaseYear AS INTEGER) DESC,
-                            skinName ASC,
-                            title ASC
-                        LIMIT ? OFFSET ?
-                    `).bind(limit, offset).all();
+            const flatCte = `
+                WITH flat AS (
+                    SELECT
+                        s.name        AS skinName,
+                        s.description AS description,
+                        s.release_year AS skinReleaseYear,
+                        a.type        AS type,
+                        a.r2_key      AS url,
+                        COALESCE(a.title, a.r2_key) AS title,
+                        a.category    AS category,
+                        a.game        AS game,
+                        a.asset_release_year AS releaseYear,
+                        a.id           AS assetId,
+                        NULL           AS platform,
+                        'asset'        AS source,
+                        ${skinlineExpr} AS skinline
+                    FROM assets a
+                    JOIN skins s ON s.id = a.skin_id
 
-                    // Cheap row count on the base tables instead of re-scanning the joined/tagged CTE.
+                    UNION ALL
+
+                    SELECT
+                        s.name        AS skinName,
+                        s.description AS description,
+                        s.release_year AS skinReleaseYear,
+                        'external'    AS type,
+                        el.url        AS url,
+                        COALESCE(el.title, el.url) AS title,
+                        el.category   AS category,
+                        el.game       AS game,
+                        el.asset_release_year AS releaseYear,
+                        NULL          AS assetId,
+                        el.platform   AS platform,
+                        'external_link' AS source,
+                        ${skinlineExpr} AS skinline
+                    FROM external_links el
+                    JOIN skins s ON s.id = el.skin_id
+                )
+            `;
+
+            const whereClauses = [];
+            const whereParams = [];
+
+            if (skinlineFilters.length > 0) {
+                whereClauses.push(`skinline IN (${skinlineFilters.map(() => '?').join(',')})`);
+                whereParams.push(...skinlineFilters);
+            }
+
+            if (categoryFilters.length > 0) {
+                whereClauses.push(`category IN (${categoryFilters.map(() => '?').join(',')})`);
+                whereParams.push(...categoryFilters);
+            }
+
+            if (gameFilters.length > 0) {
+                whereClauses.push(`game IN (${gameFilters.map(() => '?').join(',')})`);
+                whereParams.push(...gameFilters);
+            }
+
+            if (searchTerm) {
+                const likeParam = `%${searchTerm}%`;
+                whereClauses.push(`(
+                    title LIKE ? OR
+                    skinName LIKE ? OR
+                    skinline LIKE ? OR
+                    description LIKE ? OR
+                    category LIKE ? OR
+                    game LIKE ? OR
+                    CAST(releaseYear AS TEXT) LIKE ? OR
+                    (source = 'asset' AND EXISTS (
+                        SELECT 1 FROM asset_tags atg
+                        JOIN tags tg ON tg.id = atg.tag_id
+                        WHERE atg.asset_id = flat.assetId AND tg.name LIKE ?
+                    ))
+                )`);
+                whereParams.push(likeParam, likeParam, likeParam, likeParam, likeParam, likeParam, likeParam, likeParam);
+            }
+
+            const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+
+            try {
+                const pageQuery = `
+                    ${flatCte}
+                    SELECT * FROM flat
+                    ${whereSql}
+                    ${orderByClause}
+                    LIMIT ? OFFSET ?
+                `;
+
+                const { results } = await env.DB.prepare(pageQuery).bind(...whereParams, limit, offset).all();
+
+                // Unfiltered requests can use a cheap base-table count; filtered ones must count matching rows only.
+                let total;
+                if (whereClauses.length === 0) {
                     const countRow = await env.DB.prepare(`
                         SELECT
                             (SELECT COUNT(*) FROM assets) + (SELECT COUNT(*) FROM external_links) AS total
                     `).first();
-                    const total = countRow?.total ?? 0;
-
-                    // Only look up tags for the assets that ended up on this page, not the whole table.
-                    const pageAssetIds = [...new Set(results.map(row => row.assetId).filter(id => id !== null && id !== undefined))];
-                    const tagsByAssetId = {};
-
-                    if (pageAssetIds.length > 0) {
-                        const placeholders = pageAssetIds.map(() => '?').join(',');
-                        const { results: tagRows } = await env.DB.prepare(`
-                            SELECT at2.asset_id AS assetId, json_group_array(t.name) AS tags
-                            FROM asset_tags at2
-                            JOIN tags t ON t.id = at2.tag_id
-                            WHERE at2.asset_id IN (${placeholders})
-                            GROUP BY at2.asset_id
-                        `).bind(...pageAssetIds).all();
-
-                        tagRows.forEach(row => {
-                            tagsByAssetId[row.assetId] = row.tags;
-                        });
-                    }
-
-                    const items = results.map(row => ({
-                        skinName:       row.skinName,
-                        description:    row.description,
-                        skinReleaseYear: String(row.skinReleaseYear ?? 'Unknown'),
-                        type:           row.type,
-                        url:            row.url,
-                        title:          row.title,
-                        category:       row.category    || 'Uncategorized',
-                        game:           row.game        || 'Generic',
-                        releaseYear:    String(row.releaseYear ?? 'Unknown'),
-                        tags:           safeParseJSON(tagsByAssetId[row.assetId] || '[]').filter(Boolean),
-                        platform:       row.platform    || '',
-                        source:         row.source      || 'asset'
-                    }));
-
-                    const nextOffset = offset + items.length;
-                    const hasMore = nextOffset < total;
-
-                    return respondCached({ items, hasMore, nextOffset, total });
-                } catch (err) {
-                    return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+                    total = countRow?.total ?? 0;
+                } else {
+                    const countQuery = `${flatCte} SELECT COUNT(*) AS total FROM flat ${whereSql}`;
+                    const countRow = await env.DB.prepare(countQuery).bind(...whereParams).first();
+                    total = countRow?.total ?? 0;
                 }
-            }
 
-            // Legacy (no pagination params)
-            try {
-                const { results } = await env.DB.prepare(`
-                    SELECT
-                        s.codename,
-                        s.name,
-                        s.description,
-                        s.release_year,
-                        (
-                            SELECT json_group_array(json_object(
-                                'type', m.type,
-                                'url', m.url,
-                                'title', m.title,
-                                'category', m.category,
-                                'game', m.game,
-                                'assetReleaseYear', m.assetReleaseYear,
-                                'tags', m.tags,
-                                'platform', m.platform,
-                                'source', m.source
-                            ))
-                            FROM (
-                                SELECT
-                                    a.type AS type,
-                                    a.r2_key AS url,
-                                    COALESCE(a.title, a.r2_key) AS title,
-                                    a.category AS category,
-                                    a.game AS game,
-                                    a.asset_release_year AS assetReleaseYear,
-                                    (
-                                        SELECT json_group_array(t.name)
-                                        FROM tags t
-                                        JOIN asset_tags at ON t.id = at.tag_id
-                                        WHERE at.asset_id = a.id
-                                    ) AS tags,
-                                    NULL AS platform,
-                                    'asset' AS source
-                                FROM assets a
-                                WHERE a.skin_id = s.id
+                // Only look up tags for the assets that ended up on this page, not the whole table.
+                const pageAssetIds = [...new Set(results.map(row => row.assetId).filter(id => id !== null && id !== undefined))];
+                const tagsByAssetId = {};
 
-                                UNION ALL
+                if (pageAssetIds.length > 0) {
+                    const placeholders = pageAssetIds.map(() => '?').join(',');
+                    const { results: tagRows } = await env.DB.prepare(`
+                        SELECT at2.asset_id AS assetId, json_group_array(t.name) AS tags
+                        FROM asset_tags at2
+                        JOIN tags t ON t.id = at2.tag_id
+                        WHERE at2.asset_id IN (${placeholders})
+                        GROUP BY at2.asset_id
+                    `).bind(...pageAssetIds).all();
 
-                                SELECT
-                                    'external' AS type,
-                                    el.url AS url,
-                                    COALESCE(el.title, el.url) AS title,
-                                    el.category AS category,
-                                    el.game AS game,
-                                    el.asset_release_year AS assetReleaseYear,
-                                    '[]' AS tags,
-                                    el.platform AS platform,
-                                    'external_link' AS source
-                                FROM external_links el
-                                WHERE el.skin_id = s.id
-                            ) m
-                        ) AS media
-                    FROM skins s
-                `).all();
+                    tagRows.forEach(row => {
+                        tagsByAssetId[row.assetId] = row.tags;
+                    });
+                }
 
-                const formatted = results.map(row => ({
-                    skinName:    row.name,
-                    skinCodename: row.codename,
-                    description: row.description,
-                    releaseYear: row.release_year,
-                    media: safeParseJSON(row.media).map(m => ({
-                        ...m,
-                        tags: safeParseJSON(m.tags).filter(Boolean)
-                    }))
-                })).filter(skin => skin.media && skin.media.length > 0);
+                const items = results.map(row => ({
+                    skinName:       row.skinName,
+                    description:    row.description,
+                    skinReleaseYear: String(row.skinReleaseYear ?? 'Unknown'),
+                    type:           row.type,
+                    url:            row.url,
+                    title:          row.title,
+                    category:       row.category    || 'Uncategorized',
+                    game:           row.game        || 'Generic',
+                    releaseYear:    String(row.releaseYear ?? 'Unknown'),
+                    tags:           safeParseJSON(tagsByAssetId[row.assetId] || '[]').filter(Boolean),
+                    platform:       row.platform    || '',
+                    source:         row.source      || 'asset',
+                    skinline:       row.skinline
+                }));
 
-                return respondCached(formatted);
+                const nextOffset = offset + items.length;
+                const hasMore = nextOffset < total;
+
+                return respondCached({ items, hasMore, nextOffset, total });
             } catch (err) {
                 return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
             }

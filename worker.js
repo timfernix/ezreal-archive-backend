@@ -128,7 +128,7 @@ export default {
 
     async fetch(request, env) {
         const url = new URL(request.url);
-        if (url.pathname !== '/admin/catalog/regenerate') {
+        if (url.pathname !== '/api/admin/catalog/regenerate') {
             return new Response('Not found', { status: 404 });
         }
 

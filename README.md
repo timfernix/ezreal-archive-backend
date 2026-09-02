@@ -5,4 +5,4 @@ Here is the repository for the frontend: [Ezreal Media Archive](https://github.c
 
 ## What this project is
 
-The Ezreal Archive Backend is a Cloudflare Worker that generates and publishes the static catalog consumed by the frontend.
+The Ezreal Archive Backend is a  Worker that generates and publishes the catalog consumed by the frontend.

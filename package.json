@@ -4,6 +4,7 @@
   "description": "A Cloudflare Worker that serves as the API backend for the Ezreal Media Archive.\r Here is the repository for the frontend: [Ezreal Media Archive](https://github.com/timfernix/ezreal-archive)",
   "main": "worker.js",
   "scripts": {
+    "catalog:local": "node scripts/generate-catalog.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {

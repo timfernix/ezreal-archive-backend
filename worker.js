@@ -1,8 +1,296 @@
+const CATALOG_PREFIX = 'catalog/';
+const CATALOG_MANIFEST_KEY = `${CATALOG_PREFIX}catalog-manifest.json`;
+const CATALOG_ASSET_ORIGIN = 'https://assets.timfernix.dev';
+
+const catalogQuery = `
+    WITH catalog AS (
+        SELECT
+            'asset:' || a.r2_key AS id,
+            s.name AS skinName,
+            s.description AS description,
+            s.release_year AS skinReleaseYear,
+            a.type AS type,
+            a.r2_key AS url,
+            COALESCE(a.title, a.r2_key) AS title,
+            COALESCE(a.category, 'Uncategorized') AS category,
+            COALESCE(a.game, 'Generic') AS game,
+            a.asset_release_year AS releaseYear,
+            COALESCE((
+                SELECT json_group_array(t.name)
+                FROM asset_tags at
+                JOIN tags t ON t.id = at.tag_id
+                WHERE at.asset_id = a.id
+            ), '[]') AS tags,
+            '' AS platform,
+            'asset' AS source,
+            CASE
+                WHEN LOWER(TRIM(s.name)) LIKE '% ezreal' THEN TRIM(SUBSTR(TRIM(s.name), 1, LENGTH(TRIM(s.name)) - 7))
+                ELSE TRIM(s.name)
+            END AS skinline
+        FROM assets a
+        JOIN skins s ON s.id = a.skin_id
+
+        UNION ALL
+
+        SELECT
+            'external_link:' || el.url AS id,
+            s.name AS skinName,
+            s.description AS description,
+            s.release_year AS skinReleaseYear,
+            'external' AS type,
+            el.url AS url,
+            COALESCE(el.title, el.url) AS title,
+            COALESCE(el.category, 'Uncategorized') AS category,
+            COALESCE(el.game, 'Generic') AS game,
+            el.asset_release_year AS releaseYear,
+            '[]' AS tags,
+            el.platform AS platform,
+            'external_link' AS source,
+            CASE
+                WHEN LOWER(TRIM(s.name)) LIKE '% ezreal' THEN TRIM(SUBSTR(TRIM(s.name), 1, LENGTH(TRIM(s.name)) - 7))
+                ELSE TRIM(s.name)
+            END AS skinline
+        FROM external_links el
+        JOIN skins s ON s.id = el.skin_id
+    )
+    SELECT * FROM catalog
+    ORDER BY CAST(releaseYear AS INTEGER) DESC, skinName ASC, title ASC
+`;
+
+function parseTags(tags) {
+    try {
+        return JSON.parse(tags).filter(Boolean);
+    } catch {
+        return [];
+    }
+}
+
+function sortedDistinct(values) {
+    return [...new Set(values.filter(Boolean))].sort((left, right) => left.localeCompare(right));
+}
+
+async function sha256(value) {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+    return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function regenerateCatalog(env) {
+    if (!env.CATALOG) {
+        throw new Error('Missing CATALOG R2 binding.');
+    }
+
+    const catalogResult = await env.DB.prepare(catalogQuery).all();
+    const items = (catalogResult.results || []).map(row => ({
+        ...row,
+        skinReleaseYear: String(row.skinReleaseYear ?? 'Unknown'),
+        releaseYear: String(row.releaseYear ?? 'Unknown'),
+        tags: parseTags(row.tags)
+    }));
+    const content = {
+        items,
+        filters: {
+            skinlines: sortedDistinct(items.map(item => item.skinline)),
+            categories: sortedDistinct(items.map(item => item.category)),
+            games: sortedDistinct(items.map(item => item.game).filter(game => game !== 'Generic'))
+        }
+    };
+    const contentHash = await sha256(JSON.stringify(content));
+    const existingManifestObject = await env.CATALOG.get(CATALOG_MANIFEST_KEY);
+
+    if (existingManifestObject) {
+        const existingManifest = await existingManifestObject.json();
+        if (existingManifest?.version === contentHash) {
+            return { updated: false, version: contentHash, itemCount: items.length, rowsRead: catalogResult.meta?.rows_read };
+        }
+    }
+
+    const catalogKey = `${CATALOG_PREFIX}catalog.${contentHash}.json`;
+    const manifest = {
+        version: contentHash,
+        catalogUrl: `${CATALOG_ASSET_ORIGIN}/${catalogKey}`,
+        generatedAt: new Date().toISOString()
+    };
+
+    await env.CATALOG.put(catalogKey, JSON.stringify({ version: contentHash, ...content }), {
+        httpMetadata: { contentType: 'application/json', cacheControl: 'public, max-age=31536000, immutable' }
+    });
+    await env.CATALOG.put(CATALOG_MANIFEST_KEY, JSON.stringify(manifest), {
+        httpMetadata: { contentType: 'application/json', cacheControl: 'no-cache, must-revalidate' }
+    });
+
+    return { updated: true, version: contentHash, itemCount: items.length, rowsRead: catalogResult.meta?.rows_read };
+}
+
+export default {
+    async scheduled(controller, env, ctx) {
+        ctx.waitUntil(regenerateCatalog(env));
+    },
+
+    async fetch(request, env) {
+        const url = new URL(request.url);
+        if (url.pathname !== '/admin/catalog/regenerate') {
+            return new Response('Not found', { status: 404 });
+        }
+
+        if (request.method !== 'POST') {
+            return new Response('Method not allowed', { status: 405, headers: { Allow: 'POST' } });
+        }
+
+        const expectedAuthorization = env.ADMIN_TOKEN ? `Bearer ${env.ADMIN_TOKEN}` : null;
+        if (!expectedAuthorization || request.headers.get('Authorization') !== expectedAuthorization) {
+            return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+                status: 401,
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
+
+        try {
+            const result = await regenerateCatalog(env);
+            return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+        } catch (err) {
+            console.error('Catalog generation failed:', err);
+            return new Response(JSON.stringify({ error: err.message }), {
+                status: 500,
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
+    }
+};
+
+/* Legacy gallery API retired in favor of the static catalog. */
+/*
 const MAX_LIMIT = 200;
 const DEFAULT_LIMIT = 50;
 const CACHE_TTL_SECONDS = 120; // reuse identical GET responses to avoid re-scanning D1
+const CATALOG_PREFIX = 'catalog/';
+const CATALOG_MANIFEST_KEY = `${CATALOG_PREFIX}catalog-manifest.json`;
+const CATALOG_ASSET_ORIGIN = 'https://assets.timfernix.dev';
+
+const catalogQuery = `
+    WITH catalog AS (
+        SELECT
+            'asset:' || a.r2_key AS id,
+            s.name AS skinName,
+            s.description AS description,
+            s.release_year AS skinReleaseYear,
+            a.type AS type,
+            a.r2_key AS url,
+            COALESCE(a.title, a.r2_key) AS title,
+            COALESCE(a.category, 'Uncategorized') AS category,
+            COALESCE(a.game, 'Generic') AS game,
+            a.asset_release_year AS releaseYear,
+            COALESCE((
+                SELECT json_group_array(t.name)
+                FROM asset_tags at
+                JOIN tags t ON t.id = at.tag_id
+                WHERE at.asset_id = a.id
+            ), '[]') AS tags,
+            '' AS platform,
+            'asset' AS source,
+            CASE
+                WHEN LOWER(TRIM(s.name)) LIKE '% ezreal' THEN TRIM(SUBSTR(TRIM(s.name), 1, LENGTH(TRIM(s.name)) - 7))
+                ELSE TRIM(s.name)
+            END AS skinline
+        FROM assets a
+        JOIN skins s ON s.id = a.skin_id
+
+        UNION ALL
+
+        SELECT
+            'external_link:' || el.url AS id,
+            s.name AS skinName,
+            s.description AS description,
+            s.release_year AS skinReleaseYear,
+            'external' AS type,
+            el.url AS url,
+            COALESCE(el.title, el.url) AS title,
+            COALESCE(el.category, 'Uncategorized') AS category,
+            COALESCE(el.game, 'Generic') AS game,
+            el.asset_release_year AS releaseYear,
+            '[]' AS tags,
+            el.platform AS platform,
+            'external_link' AS source,
+            CASE
+                WHEN LOWER(TRIM(s.name)) LIKE '% ezreal' THEN TRIM(SUBSTR(TRIM(s.name), 1, LENGTH(TRIM(s.name)) - 7))
+                ELSE TRIM(s.name)
+            END AS skinline
+        FROM external_links el
+        JOIN skins s ON s.id = el.skin_id
+    )
+    SELECT * FROM catalog
+    ORDER BY CAST(releaseYear AS INTEGER) DESC, skinName ASC, title ASC
+`;
+
+function parseTags(tags) {
+    try {
+        return JSON.parse(tags).filter(Boolean);
+    } catch {
+        return [];
+    }
+}
+
+function sortedDistinct(values) {
+    return [...new Set(values.filter(Boolean))].sort((left, right) => left.localeCompare(right));
+}
+
+async function sha256(value) {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+    return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function regenerateCatalog(env) {
+    if (!env.CATALOG) {
+        throw new Error('Missing CATALOG R2 binding.');
+    }
+
+    const catalogResult = await env.DB.prepare(catalogQuery).all();
+    const items = (catalogResult.results || []).map(row => ({
+        ...row,
+        skinReleaseYear: String(row.skinReleaseYear ?? 'Unknown'),
+        releaseYear: String(row.releaseYear ?? 'Unknown'),
+        tags: parseTags(row.tags)
+    }));
+    const content = {
+        items,
+        filters: {
+            skinlines: sortedDistinct(items.map(item => item.skinline)),
+            categories: sortedDistinct(items.map(item => item.category)),
+            games: sortedDistinct(items.map(item => item.game).filter(game => game !== 'Generic'))
+        }
+    };
+    const contentHash = await sha256(JSON.stringify(content));
+    const existingManifestObject = await env.CATALOG.get(CATALOG_MANIFEST_KEY);
+
+    if (existingManifestObject) {
+        const existingManifest = await existingManifestObject.json();
+        if (existingManifest?.version === contentHash) {
+            return { updated: false, version: contentHash, itemCount: items.length, rowsRead: catalogResult.meta?.rows_read };
+        }
+    }
+
+    const catalogKey = `${CATALOG_PREFIX}catalog.${contentHash}.json`;
+    const catalog = { version: contentHash, ...content };
+    const manifest = {
+        version: contentHash,
+        catalogUrl: `${CATALOG_ASSET_ORIGIN}/${catalogKey}`,
+        generatedAt: new Date().toISOString()
+    };
+
+    await env.CATALOG.put(catalogKey, JSON.stringify(catalog), {
+        httpMetadata: { contentType: 'application/json', cacheControl: 'public, max-age=31536000, immutable' }
+    });
+    await env.CATALOG.put(CATALOG_MANIFEST_KEY, JSON.stringify(manifest), {
+        httpMetadata: { contentType: 'application/json', cacheControl: 'no-cache, must-revalidate' }
+    });
+
+    return { updated: true, version: contentHash, itemCount: items.length, rowsRead: catalogResult.meta?.rows_read };
+}
 
 export default {
+    async scheduled(controller, env, ctx) {
+        ctx.waitUntil(regenerateCatalog(env));
+    },
+
     async fetch(request, env, ctx) {
         const corsHeaders = {
             "Access-Control-Allow-Origin": "*",
@@ -14,6 +302,25 @@ export default {
 
         const url = new URL(request.url);
         const cache = caches.default;
+
+        if (url.pathname === '/api/skins' || url.pathname === '/api/filters' || url.pathname === '/api/asset') {
+            return new Response('Not found', { status: 404 });
+        }
+
+        if (url.pathname === '/admin/catalog/regenerate') {
+            const expectedAuthorization = env.ADMIN_TOKEN ? `Bearer ${env.ADMIN_TOKEN}` : null;
+            if (request.method !== 'POST' || !expectedAuthorization || request.headers.get('Authorization') !== expectedAuthorization) {
+                return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers: corsHeaders });
+            }
+
+            try {
+                const result = await regenerateCatalog(env);
+                return new Response(JSON.stringify(result), { headers: corsHeaders });
+            } catch (err) {
+                console.error('Catalog generation failed:', err);
+                return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+            }
+        }
 
         // Cache-Control does not apply on cache miss, so read/write the edge cache explicitly.
         const cachedResponse = request.method === "GET" ? await cache.match(request) : null;
@@ -174,21 +481,24 @@ export default {
                     LIMIT ? OFFSET ?
                 `;
 
-                const { results } = await env.DB.prepare(pageQuery).bind(...whereParams, limit, offset).all();
+                const pageResult = await env.DB.prepare(pageQuery).bind(...whereParams, limit, offset).all();
+                const { results } = pageResult;
 
                 // Total only needs to be known once — recomputing it on every subsequent page would
                 // re-scan the whole (filtered) table again for no benefit, since the client caches it.
                 let total = null;
                 if (offset === 0) {
                     if (whereClauses.length === 0) {
-                        const countRow = await env.DB.prepare(`
+                        const countResult = await env.DB.prepare(`
                             SELECT
                                 (SELECT COUNT(*) FROM assets) + (SELECT COUNT(*) FROM external_links) AS total
-                        `).first();
+                        `).all();
+                        const countRow = countResult.results?.[0];
                         total = countRow?.total ?? 0;
                     } else {
                         const countQuery = `${flatCte} SELECT COUNT(*) AS total FROM flat ${whereSql}`;
-                        const countRow = await env.DB.prepare(countQuery).bind(...whereParams).first();
+                        const countResult = await env.DB.prepare(countQuery).bind(...whereParams).all();
+                        const countRow = countResult.results?.[0];
                         total = countRow?.total ?? 0;
                     }
                 }
@@ -199,13 +509,14 @@ export default {
 
                 if (pageAssetIds.length > 0) {
                     const placeholders = pageAssetIds.map(() => '?').join(',');
-                    const { results: tagRows } = await env.DB.prepare(`
+                    const tagResult = await env.DB.prepare(`
                         SELECT at2.asset_id AS assetId, json_group_array(t.name) AS tags
                         FROM asset_tags at2
                         JOIN tags t ON t.id = at2.tag_id
                         WHERE at2.asset_id IN (${placeholders})
                         GROUP BY at2.asset_id
                     `).bind(...pageAssetIds).all();
+                    const { results: tagRows } = tagResult;
 
                     tagRows.forEach(row => {
                         tagsByAssetId[row.assetId] = row.tags;
@@ -410,3 +721,4 @@ export default {
         return new Response("Not found", { status: 404 });
     }
 };
+*/

@@ -91,7 +91,8 @@ async function regenerateCatalog(env) {
         filters: {
             skinlines: sortedDistinct(items.map(item => item.skinline)),
             categories: sortedDistinct(items.map(item => item.category)),
-            games: sortedDistinct(items.map(item => item.game).filter(game => game !== 'Generic'))
+            games: sortedDistinct(items.map(item => item.game).filter(game => game !== 'Generic')),
+            tags: sortedDistinct(items.flatMap(item => item.tags))
         }
     };
     const contentHash = await sha256(JSON.stringify(content));

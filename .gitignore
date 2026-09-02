@@ -3,3 +3,4 @@ node_modules/
 seed.sql
 generated/
 .dev.vars*
+scripts/regenerate-catalog.cmd

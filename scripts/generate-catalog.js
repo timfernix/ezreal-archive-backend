@@ -51,7 +51,12 @@ const catalogQuery = `
             COALESCE(el.category, 'Uncategorized') AS category,
             COALESCE(el.game, 'Generic') AS game,
             el.asset_release_year AS releaseYear,
-            '[]' AS tags,
+            COALESCE((
+                SELECT json_group_array(t.name)
+                FROM external_link_tags elt
+                JOIN tags t ON t.id = elt.tag_id
+                WHERE elt.external_link_id = el.id
+            ), '[]') AS tags,
             el.platform AS platform,
             'external_link' AS source,
             CASE

@@ -12,6 +12,7 @@ const catalogQuery = `
     WITH catalog AS (
         SELECT
             'asset:' || a.r2_key AS id,
+            a.id AS databaseId,
             s.name AS skinName,
             s.description AS description,
             s.release_year AS skinReleaseYear,
@@ -40,6 +41,7 @@ const catalogQuery = `
 
         SELECT
             'external_link:' || el.url AS id,
+            el.id AS databaseId,
             s.name AS skinName,
             s.description AS description,
             s.release_year AS skinReleaseYear,

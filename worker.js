@@ -9,7 +9,7 @@ const catalogQuery = `
             a.id AS databaseId,
             s.name AS skinName,
             s.description AS description,
-            s.release_year AS skinReleaseYear,
+            s.release_date AS skinReleaseDate,
             a.type AS type,
             a.r2_key AS url,
             COALESCE(a.title, a.r2_key) AS title,
@@ -38,7 +38,7 @@ const catalogQuery = `
             el.id AS databaseId,
             s.name AS skinName,
             s.description AS description,
-            s.release_year AS skinReleaseYear,
+            s.release_date AS skinReleaseDate,
             'external' AS type,
             el.url AS url,
             COALESCE(el.title, el.url) AS title,
@@ -61,7 +61,7 @@ const catalogQuery = `
         JOIN skins s ON s.id = el.skin_id
     )
     SELECT * FROM catalog
-    ORDER BY CAST(releaseYear AS INTEGER) DESC, skinName ASC, title ASC
+    ORDER BY CAST(SUBSTR(skinReleaseDate, 1, 4) AS INTEGER) DESC, skinReleaseDate DESC, skinName ASC, title ASC
 `;
 
 function parseTags(tags) {
@@ -89,7 +89,7 @@ async function regenerateCatalog(env) {
     const catalogResult = await env.DB.prepare(catalogQuery).all();
     const items = (catalogResult.results || []).map(row => ({
         ...row,
-        skinReleaseYear: String(row.skinReleaseYear ?? 'Unknown'),
+        skinReleaseDate: String(row.skinReleaseDate ?? 'Unknown'),
         releaseYear: String(row.releaseYear ?? 'Unknown'),
         tags: parseTags(row.tags)
     }));

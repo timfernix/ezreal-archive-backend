@@ -4,7 +4,10 @@
   "description": "A Cloudflare Worker that serves as the API backend for the Ezreal Media Archive.\r Here is the repository for the frontend: [Ezreal Media Archive](https://github.com/timfernix/ezreal-archive)",
   "main": "worker.js",
   "scripts": {
+    "dev": "wrangler dev",
+    "dev:local": "wrangler dev --persist-to .wrangler/local-production-db",
     "d1:pull-remote": "node scripts/pull-remote-d1.js",
+    "d1:sync-local": "node scripts/sync-local-d1.js",
     "catalog:local": "node scripts/generate-catalog.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },

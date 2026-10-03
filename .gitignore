@@ -4,3 +4,6 @@ seed.sql
 generated/
 .dev.vars*
 scripts/regenerate-catalog.cmd
+sync-local-d1.js
+pull-remote-d1.js
+migrations/

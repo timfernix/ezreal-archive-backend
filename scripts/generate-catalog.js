@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -30,6 +30,8 @@ const catalogQuery = `
                 WHERE at.asset_id = a.id
             ), '[]') AS tags,
             '' AS platform,
+            COALESCE(a.thumb_key, '') AS thumbUrl,
+            COALESCE(a.preview_key, '') AS previewUrl,
             'asset' AS source,
             CASE
                 WHEN LOWER(TRIM(s.name)) LIKE '% ezreal' THEN TRIM(SUBSTR(TRIM(s.name), 1, LENGTH(TRIM(s.name)) - 7))
@@ -59,6 +61,8 @@ const catalogQuery = `
                 WHERE elt.external_link_id = el.id
             ), '[]') AS tags,
             el.platform AS platform,
+            '' AS thumbUrl,
+            '' AS previewUrl,
             'external_link' AS source,
             CASE
                 WHEN LOWER(TRIM(s.name)) LIKE '% ezreal' THEN TRIM(SUBSTR(TRIM(s.name), 1, LENGTH(TRIM(s.name)) - 7))
@@ -126,4 +130,20 @@ const manifest = { version, catalogUrl: catalogFileName, generatedAt: new Date()
 mkdirSync(outputDirectory, { recursive: true });
 writeFileSync(resolve(outputDirectory, catalogFileName), `${JSON.stringify(catalog)}\n`);
 writeFileSync(resolve(outputDirectory, 'catalog-manifest.json'), `${JSON.stringify(manifest)}\n`);
+
+// Remove superseded versions so the output folder only keeps the catalog the manifest points to.
+const staleFiles = readdirSync(outputDirectory).filter(name => /^catalog\.[0-9a-f]{64}\.json$/.test(name) && name !== catalogFileName);
+const removedFiles = staleFiles.filter(name => {
+    try {
+        rmSync(resolve(outputDirectory, name));
+        return true;
+    } catch (err) {
+        // A running dev server may hold the file open; it will be removed on the next run.
+        console.warn(`Could not remove ${name}: ${err.code || err.message}`);
+        return false;
+    }
+});
 console.log(`Wrote ${items.length} catalog entries to ${outputDirectory}`);
+if (removedFiles.length > 0) {
+    console.log(`Removed ${removedFiles.length} outdated catalog file(s).`);
+}

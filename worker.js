@@ -23,6 +23,8 @@ const catalogQuery = `
                 WHERE at.asset_id = a.id
             ), '[]') AS tags,
             '' AS platform,
+            COALESCE(a.thumb_key, '') AS thumbUrl,
+            COALESCE(a.preview_key, '') AS previewUrl,
             'asset' AS source,
             CASE
                 WHEN LOWER(TRIM(s.name)) LIKE '% ezreal' THEN TRIM(SUBSTR(TRIM(s.name), 1, LENGTH(TRIM(s.name)) - 7))
@@ -52,6 +54,8 @@ const catalogQuery = `
                 WHERE elt.external_link_id = el.id
             ), '[]') AS tags,
             el.platform AS platform,
+            '' AS thumbUrl,
+            '' AS previewUrl,
             'external_link' AS source,
             CASE
                 WHEN LOWER(TRIM(s.name)) LIKE '% ezreal' THEN TRIM(SUBSTR(TRIM(s.name), 1, LENGTH(TRIM(s.name)) - 7))

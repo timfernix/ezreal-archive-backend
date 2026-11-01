@@ -25,6 +25,7 @@ const catalogQuery = `
             '' AS platform,
             COALESCE(a.thumb_key, '') AS thumbUrl,
             COALESCE(a.preview_key, '') AS previewUrl,
+            COALESCE(a.uploaded_at, '') AS uploadedAt,
             'asset' AS source,
             CASE
                 WHEN LOWER(TRIM(s.name)) LIKE '% ezreal' THEN TRIM(SUBSTR(TRIM(s.name), 1, LENGTH(TRIM(s.name)) - 7))
@@ -56,6 +57,7 @@ const catalogQuery = `
             el.platform AS platform,
             '' AS thumbUrl,
             '' AS previewUrl,
+            '' AS uploadedAt,
             'external_link' AS source,
             CASE
                 WHEN LOWER(TRIM(s.name)) LIKE '% ezreal' THEN TRIM(SUBSTR(TRIM(s.name), 1, LENGTH(TRIM(s.name)) - 7))

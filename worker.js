@@ -87,7 +87,7 @@ async function sha256(value) {
     return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
-async function regenerateCatalog(env) {
+export async function regenerateCatalog(env) {
     if (!env.CATALOG) {
         throw new Error('Missing CATALOG R2 binding.');
     }
@@ -135,9 +135,20 @@ async function regenerateCatalog(env) {
     return { updated: true, version: contentHash, itemCount: items.length, rowsRead: catalogResult.meta?.rows_read };
 }
 
+export function scheduleCatalogRegeneration(ctx, env, regenerate = regenerateCatalog, logger = console) {
+    ctx.waitUntil(Promise.resolve()
+        .then(() => regenerate(env))
+        .catch(error => {
+            logger.error('Scheduled catalog regeneration failed', {
+                message: error instanceof Error ? error.message : String(error),
+                stack: error instanceof Error ? error.stack : undefined
+            });
+        }));
+}
+
 export default {
     async scheduled(controller, env, ctx) {
-        ctx.waitUntil(regenerateCatalog(env));
+        scheduleCatalogRegeneration(ctx, env);
     },
 
     async fetch(request, env) {
@@ -170,4 +181,3 @@ export default {
         }
     }
 };
-

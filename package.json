@@ -24,6 +24,6 @@
   },
   "homepage": "https://github.com/timfernix/ezreal-archive-backend#readme",
   "devDependencies": {
-    "wrangler": "^4.146.0"
+    "wrangler": "^4.158.0"
   }
 }
